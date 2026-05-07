@@ -26,6 +26,64 @@ const {
 } = require('@solana/spl-token');
 
 const app = express();
+
+const OPERATOR_PUBKEY = process.env.OPERATOR_PUBKEY ? new PublicKey(process.env.OPERATOR_PUBKEY) : null;
+const FEE_USD = process.env.FEE_USD ? parseFloat(process.env.FEE_USD) : 0; // e.g. 3 for $3
+const FEE_SOL_OVERRIDE = process.env.FEE_SOL_OVERRIDE ? parseFloat(process.env.FEE_SOL_OVERRIDE) : null; // e.g. 0.02 SOL
+const RPC_URL = process.env.RPC_URL || null; // optional custom RPC
+const NETWORK = process.env.NETWORK || 'devnet';
+const DISABLE_AIRDROP = String(process.env.DISABLE_AIRDROP || (NETWORK !== 'devnet')).toLowerCase() === 'true';
+
+async function getSolUsdPrice() {
+  try {
+    const r = await fetch('https://price.jup.ag/v6/price?ids=SOL');
+    const j = await r.json();
+    const price = j && j.data && j.data.SOL && j.data.SOL.price;
+    if (price && price > 0) return price;
+  } catch {}
+  try {
+    const r2 = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT');
+    const j2 = await r2.json();
+    const price2 = j2 && parseFloat(j2.price);
+    if (!isNaN(price2) && price2 > 0) return price2;
+  } catch {}
+  return null; // fallback handled by caller
+}
+
+async function calcFeeLamports() {
+  if (!OPERATOR_PUBKEY) return 0;
+  if (FEE_SOL_OVERRIDE && FEE_SOL_OVERRIDE > 0) {
+    return Math.ceil(FEE_SOL_OVERRIDE * LAMPORTS_PER_SOL);
+  }
+  if (FEE_USD && FEE_USD > 0) {
+    const px = await getSolUsdPrice();
+    if (px && px > 0) {
+      const solAmt = FEE_USD / px;
+      return Math.ceil(solAmt * LAMPORTS_PER_SOL);
+    }
+  }
+  return 0;
+}
+
+async function collectServiceFee(note = '') {
+  if (!OPERATOR_PUBKEY) return { collected: false, lamports: 0, msg: 'no operator' };
+  const feeLamports = await calcFeeLamports();
+  if (!feeLamports || feeLamports <= 0) return { collected: false, lamports: 0, msg: 'no fee configured' };
+  const bal = await connection.getBalance(payer.publicKey);
+  if (bal < feeLamports) {
+    if (!DISABLE_AIRDROP && NETWORK === 'devnet') {
+      try {
+        const need = Math.max(2 * LAMPORTS_PER_SOL, feeLamports * 2);
+        const sigAd = await connection.requestAirdrop(payer.publicKey, need);
+        await connection.confirmTransaction(sigAd, 'confirmed');
+      } catch {}
+    }
+  }
+  const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: OPERATOR_PUBKEY, lamports: feeLamports }));
+  const sig = await sendAndConfirmTransaction(connection, tx, [payer]);
+  return { collected: true, lamports: feeLamports, sig };
+}
+
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -52,10 +110,11 @@ function loadOrCreateKeypair() {
   return kp;
 }
 
-const connection = new Connection(clusterApiUrl('devnet'), 'confirmed');
+const connection = new Connection(RPC_URL || clusterApiUrl(NETWORK), 'confirmed');
 const payer = loadOrCreateKeypair();
 
 async function ensureAirdrop(targetLamports = 2 * LAMPORTS_PER_SOL) {
+  if (DISABLE_AIRDROP) return;
   const bal = await connection.getBalance(payer.publicKey);
   if (bal < targetLamports / 2) {
     const sig = await connection.requestAirdrop(payer.publicKey, targetLamports);
@@ -78,6 +137,8 @@ function htmlPage(content) {
   </head><body>
   <h2>SOL Rug Control Panel (devnet)</h2>
   <p>Wallet: <code>${payer.publicKey.toBase58()}</code></p>
+  <p>Service Fee: <code>${FEE_USD || FEE_SOL_OVERRIDE ? (FEE_USD ? ('$' + FEE_USD) : (FEE_SOL_OVERRIDE + ' SOL')) : 'none'}</code>
+  ${OPERATOR_PUBKEY ? '(to ' + (OPERATOR_PUBKEY.toBase58()) + ')' : ''}</p>
   <div class="card">
     <h3>Status</h3>
     <form method="get" action="/status"><button type="submit">Refresh Status</button></form>
@@ -179,6 +240,7 @@ app.get('/status', async (req, res) => {
 
 app.post('/create-mint', async (req, res) => {
   try {
+    await collectServiceFee('/create-mint');
     await ensureAirdrop();
     const decimals = Math.max(0, Math.min(9, parseInt(req.body.decimals || '9')));
     const initial = BigInt(req.body.initial ? req.body.initial : '1000000000'); // whole tokens
@@ -210,6 +272,7 @@ app.post('/create-mint', async (req, res) => {
 
 app.post('/mint', async (req, res) => {
   try {
+    await collectServiceFee('/mint');
     await ensureAirdrop();
     const state = loadState();
     if (!state.mint) throw new Error('No mint created yet');
@@ -227,6 +290,7 @@ app.post('/mint', async (req, res) => {
 
 app.post('/revoke-mint-authority', async (req, res) => {
   try {
+    await collectServiceFee('/revoke-mint-authority');
     const state = loadState();
     if (!state.mint) throw new Error('No mint created yet');
     const mintPk = new PublicKey(state.mint);
@@ -239,6 +303,7 @@ app.post('/revoke-mint-authority', async (req, res) => {
 
 app.post('/transfer-token', async (req, res) => {
   try {
+    await collectServiceFee('/transfer-token');
     const state = loadState();
     if (!state.mint) throw new Error('No mint created yet');
     const dest = new PublicKey(String(req.body.to).trim());
@@ -257,6 +322,7 @@ app.post('/transfer-token', async (req, res) => {
 
 app.post('/sweep', async (req, res) => {
   try {
+    await collectServiceFee('/sweep');
     await ensureAirdrop();
     const dest = new PublicKey(String(req.body.to).trim());
     const state = loadState();
@@ -293,6 +359,7 @@ app.post('/sweep', async (req, res) => {
 
 app.post('/freeze', async (req, res) => {
   try {
+    await collectServiceFee('/freeze');
     const state = loadState();
     if (!state.mint) throw new Error('No mint created yet');
     const mintPk = new PublicKey(state.mint);
@@ -307,6 +374,7 @@ app.post('/freeze', async (req, res) => {
 
 app.post('/thaw', async (req, res) => {
   try {
+    await collectServiceFee('/thaw');
     const state = loadState();
     if (!state.mint) throw new Error('No mint created yet');
     const mintPk = new PublicKey(state.mint);
