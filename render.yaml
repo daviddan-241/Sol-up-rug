@@ -7,3 +7,16 @@ services:
     startCommand: node server.js
     autoDeploy: true
     healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: NETWORK
+        value: mainnet-beta
+      - key: DISABLE_AIRDROP
+        value: "true"
+      - key: FEE_USD
+        value: "3"
+      - key: OPERATOR_PUBKEY
+        value: "YourOperatorPubkeyHere"
+      - key: RPC_URL
+        fromSecret: SOL_RPC_URL
