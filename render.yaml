@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: sol-up-rug
+    env: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: node server.js
+    autoDeploy: true
+    healthCheckPath: /status
