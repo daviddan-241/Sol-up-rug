@@ -144,6 +144,12 @@ function htmlPage(content) {
     <form method="get" action="/status"><button type="submit">Refresh Status</button></form>
   </div>
   <div class="card">
+    <h3>Quick Controls</h3>
+    <form method="post" action="/create-mint"><button type="submit">Create Mint (defaults)</button></form>
+    <form method="post" action="/mint" style="margin-top:6px"><input type="hidden" name="amount" value="100000"/><button type="submit">Mint 100k</button></form>
+    <form method="post" action="/revoke-mint-authority" style="margin-top:6px"><button type="submit">Revoke Mint Authority</button></form>
+  </div>
+  <div class="card">
     <h3>Create SPL Token (Mint)</h3>
     <form method="post" action="/create-mint">
       <label>Decimals (0-9)<input name="decimals" value="9"/></label>
