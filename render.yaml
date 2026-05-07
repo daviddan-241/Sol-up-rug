@@ -6,4 +6,4 @@ services:
     buildCommand: npm ci
     startCommand: node server.js
     autoDeploy: true
-    healthCheckPath: /status
+    healthCheckPath: /
